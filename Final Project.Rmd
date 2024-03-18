@@ -1,0 +1,261 @@
+---
+title: "Course_project_STA141"
+author: "Ruiqi Wang"
+date: "2024-03-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+suppressWarnings(library(tidyverse))
+suppressWarnings(library(knitr))
+suppressWarnings(library(dplyr))
+library(ggplot2)
+library(MASS)
+set.seed(2024)
+```
+
+**STA 141A Final Project**
+
+```{r echo=FALSE, eval=TRUE}
+# Load the data 
+session=list()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('./Data/session',i,'.rds',sep=''))
+  }
+```
+
+**Abstract**: In this project, our ultimate goal is to predict the outcome of behavior of the mice base on neural activity and stimulus. And we applied logistic regression model to help us train in order to get a more appropriate prediction. Overall, the predictive accuracy and other performance would provide us with vulnerable finding in the relationship between behavior and neural activity on mice.
+
+**INTRODUCTION**: This project is to use a provided 18 data set about mouse stimuli to train our Prediction and also to get the prediction model of what act would mice perform under various circumstances. We mainly would want to predict the outcome of feedback type of the mice and relate it to the neural activity data. Firstly, we would explore our data to see what categories are in data in order to help us with codes and understanding and find patterns between 18 sessions of data. Then we combine the data set in order to make our prediction more convenience later. Lastly, we choose 100 trials from two random session and evaluate the prediction model.
+
+**Section 1:**
+
+By integrating the data, we are able to find categories of data sets and then assign those variable to a name, which would benefit our coding later. We observed variations in the number of neurons, trials and stimuli conditions in the session summary table.
+
+In examining the homogeneity and heterogeneity across sessions and mice, we noted different patterns of neural activity and success rates, as illustrated in the respective plots. And the bar graph of average neural activity and success rate by session shows the variability between session, which suggesting that individual and session-specific factor may influence the outcome.
+
+```{r pt1}
+
+sessions_summary <- map_df(1:length(session), function(i) {
+  data <- session[[i]]
+  tibble(
+    SessionID = i,
+    MouseName = data$mouse_name,
+    DateExp = data$date_exp,
+    NBrainArea = length(unique(data$brain_area)),
+    NNeurons = length(data$brain_area), 
+    NTrials = length(data$feedback_type),
+    SuccessRate = mean(data$feedback_type == 1)  
+  )
+})
+
+
+head(sessions_summary)
+
+
+
+```
+
+```{r pt1(2)}
+spike_data <- session[[1]]$spks[[1]] 
+spike_data_long <- as.data.frame(spike_data) %>%
+  mutate(Neuron = row_number()) %>%
+  pivot_longer(-Neuron, names_to = "TimeBin", values_to = "SpikeCount")
+
+spike_data_long$TimeBinNumeric <- as.numeric(gsub("V", "", spike_data_long$TimeBin))  
+
+ggplot(spike_data_long, aes(x = TimeBinNumeric, y = Neuron, fill = as.factor(SpikeCount))) +
+  geom_tile() +
+  scale_fill_viridis_d() +
+  labs(x = "Time Bin", y = "Neuron", title = "Spike Train for Trial 1 in Session 1") +
+  theme_minimal()
+```
+
+```{r pt1(3)}
+plot_avg_neural_activity <- function(session_index) {
+  if(session_index < 1 || session_index > length(session)) {
+    stop("Session index is out of range.")
+  }
+  spks_list <- session[[session_index]]$spks
+  avg_activity <- sapply(spks_list, function(trial_spks) {
+    mean(sapply(trial_spks, sum))
+  })
+  plot_data <- data.frame(Trial = 1:length(avg_activity), AvgActivity = avg_activity)
+  ggplot(plot_data, aes(x = Trial, y = AvgActivity)) +
+    geom_line() +
+    labs(title = paste("Average Neural Activity Across Trials in Session", session_index),
+         x = "Trial",
+         y = "Average Neural Activity") +
+    theme_minimal()
+}
+plot_avg_neural_activity(1) 
+plot_avg_neural_activity(2) 
+plot_avg_neural_activity(5)  
+plot_avg_neural_activity(10)
+```
+
+```{r pt1(4)}
+sessions_summary$AvgNeuralActivity <- map_dbl(1:length(session), function(i) {
+  mean(sapply(session[[i]]$spks, function(trial) mean(apply(trial, 1, sum))))
+})
+
+ggplot(sessions_summary, aes(x = factor(SessionID), y = AvgNeuralActivity)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Session", y = "Average Neural Activity", title = "Average Neural Activity by Session") +
+  theme_minimal()
+
+
+
+ggplot(sessions_summary, aes(x = factor(SessionID), y = SuccessRate)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(x = "Session", y = "Success Rate", title = "Success Rate by Session") +
+  theme_minimal()
+
+
+```
+
+```{r combiningdata}
+for (i in 1:length(session)) {
+  session[[i]]$avg_neural_activity <- sapply(session[[i]]$spks, function(trial) {
+    mean(sapply(trial, sum))  
+  })
+}
+
+
+combined_data <- data.frame()  
+
+for (i in 1:length(session)) {
+  session_data <- session[[i]]
+  
+ if (length(session_data$spks) > 0) {
+    session_data$avg_neural_activity <- sapply(session_data$spks, function(trial) {
+      mean(sapply(trial, sum))  
+    })
+session_data$normalized_activity <- session_data$avg_neural_activity / length(session_data$brain_area)
+  } else {
+ session_data$avg_neural_activity <- rep(NA, length(session_data$feedback_type))
+    session_data$normalized_activity <- rep(NA, length(session_data$feedback_type))
+  }
+  if (length(session_data$feedback_type) != length(session_data$avg_neural_activity) ||
+      length(session_data$feedback_type) != length(session_data$normalized_activity)) {
+    cat("Length mismatch in session", i, "\n")
+    next  
+  }
+   df <- data.frame(
+    SessionID = rep(i, length(session_data$feedback_type)),
+    TrialID = 1:length(session_data$feedback_type),
+    MouseName = rep(session_data$mouse_name, length(session_data$feedback_type)),
+    ContrastLeft = session_data$contrast_left,
+    ContrastRight = session_data$contrast_right,
+    FeedbackType = session_data$feedback_type,
+    AvgNeuralActivity = session_data$avg_neural_activity,
+    NormalizedActivity = session_data$normalized_activity
+  )
+  
+  combined_data <- rbind(combined_data, df)
+}
+  
+  
+  
+head(combined_data)
+```
+
+```{r pt2}
+for (i in 1:length(session)) {
+  session_data <- session[[i]]
+  session_data$avg_firing_rate <- sapply(session_data$spks, function(trial) {
+    mean(sapply(trial, function(neuron) mean(neuron)))
+  })
+  session_data$peak_firing_rate <- sapply(session_data$spks, function(trial) {
+    max(sapply(trial, max))
+  })
+  session_data$firing_rate_variability <- sapply(session_data$spks, function(trial) {
+    var(sapply(trial, mean))
+  })
+}
+
+
+```
+
+**Predictive Modeling:**
+
+In the later session, I used logistic regression models and binomial to help to predict trial outcomes based on neural activity and contrasts, which can have influence the coefficients for all predictors and feedback type. The model can predict the strength of different variable, mostly feedback type, by using the p-value. Where the p-value is extremely small and we are above 95% confidence with the interval we predict.
+
+```{r prediction}
+extract_trial_data <- function(session_data, trial_index) {
+  tibble(
+    ContrastLeft = session_data$contrast_left[trial_index],
+    ContrastRight = session_data$contrast_right[trial_index],
+    FeedbackType = as.factor(session_data$feedback_type[trial_index]),
+    NeuralActivity = rowSums(session_data$spks[[trial_index]]),
+    BrainAreaCount = length(unique(session_data$brain_area))
+  )
+}
+
+
+all_trials_data <- tibble()
+for (i in 1:length(session)) {
+  session_data <- session[[i]]
+  for (j in 1:length(session_data$feedback_type)) {
+    trial_data <- extract_trial_data(session_data, j)
+    all_trials_data <- bind_rows(all_trials_data, trial_data)
+  }
+}
+print(all_trials_data)
+
+
+predictive_model <- glm(FeedbackType ~ ContrastLeft + ContrastRight + NeuralActivity, 
+                        data = all_trials_data, family = 'binomial')
+summary(predictive_model)
+
+logistic_model <- glm(FeedbackType ~ NeuralActivity, family = binomial(link = 'logit'), data = all_trials_data)
+summary(logistic_model)
+
+all_trials_data$PredictedProbabilities <- predict(logistic_model, type = "response")
+head(all_trials_data$PredictedProbabilities)
+
+all_trials_data$PredictedClass <- ifelse(all_trials_data$PredictedProbabilities > 0.5, "Success", "Failure")
+head(all_trials_data)
+
+
+```
+
+**Prediction Performance on Test Sets:**
+
+The model’s performance was evaluated on two separate test sets from Session 1 and Session 18, where we can find the error rate of 0.6. The estimated probabilities from the logistic model perform well with this case.
+
+```{r test data}
+test_session=list()
+for(i in 1:2){
+  test_session[[i]]=readRDS(paste('./Data/test',i,'.rds',sep=''))
+  }
+
+extract_test_trial_data <- function(test_session_data, trial_index) {
+  neural_activity <- sum(test_session_data$spks[[trial_index]]) 
+  return(data.frame(
+    ContrastLeft = test_session_data$contrast_left[trial_index],
+    ContrastRight = test_session_data$contrast_right[trial_index],
+    NeuralActivity = neural_activity
+  ))
+}
+
+combined_test_data <- data.frame()
+for (i in 1:length(test_session)) {
+  for (j in 1:length(test_session[[i]]$feedback_type)) {
+    trial_data <- extract_test_trial_data(test_session[[i]], j)
+    combined_test_data <- rbind(combined_test_data, trial_data)
+  }
+}
+
+
+str(combined_test_data)
+combined_test_data$PredictedProbabilities <- predict(predictive_model, newdata = combined_test_data, type = "response")
+
+summary(combined_test_data)
+
+```
+
+**Discussion:**
+
+Above all, the findings of the prediction models give us ideas of how the factors contributing to the outcomes, where neural activity dedicated the most in the prediction model and the contrast level also affected the prediction. The exploratory part of our project really would help learning how to write code since we need to know what might be the factor, and what would be the result. The performance of the logistic regression model we have trained need some more model since the error rate is kind of high with 0.6. Overall, this project shows us the possibility and particularity of using R to predict models and serve for Neural Science, as well as other subjects.
